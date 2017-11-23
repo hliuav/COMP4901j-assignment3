@@ -49,24 +49,24 @@ class CaptioningRNN(object):
         self._end = word_to_idx.get('<END>', None)
 
         # Initialize word vectors
-        self.params['W_embed'] = np.random.randn(vocab_size, wordvec_dim)
+        self.params['W_embed'] = np.random.randn(vocab_size, wordvec_dim)#(V,W)
         self.params['W_embed'] /= 100
 
         # Initialize CNN -> hidden state projection parameters
-        self.params['W_proj'] = np.random.randn(input_dim, hidden_dim)
+        self.params['W_proj'] = np.random.randn(input_dim, hidden_dim)#(D,H)
         self.params['W_proj'] /= np.sqrt(input_dim)
         self.params['b_proj'] = np.zeros(hidden_dim)
 
         # Initialize parameters for the RNN
         dim_mul = {'lstm': 4, 'rnn': 1}[cell_type]
-        self.params['Wx'] = np.random.randn(wordvec_dim, dim_mul * hidden_dim)
+        self.params['Wx'] = np.random.randn(wordvec_dim, dim_mul * hidden_dim)#(W,H)
         self.params['Wx'] /= np.sqrt(wordvec_dim)
-        self.params['Wh'] = np.random.randn(hidden_dim, dim_mul * hidden_dim)
+        self.params['Wh'] = np.random.randn(hidden_dim, dim_mul * hidden_dim)#(H,H)
         self.params['Wh'] /= np.sqrt(hidden_dim)
         self.params['b'] = np.zeros(dim_mul * hidden_dim)
 
         # Initialize output to vocab weights
-        self.params['W_vocab'] = np.random.randn(hidden_dim, vocab_size)
+        self.params['W_vocab'] = np.random.randn(hidden_dim, vocab_size)#(H,V)
         self.params['W_vocab'] /= np.sqrt(hidden_dim)
         self.params['b_vocab'] = np.zeros(vocab_size)
 
@@ -137,7 +137,35 @@ class CaptioningRNN(object):
         # defined above to store loss and gradients; grads[k] should give the      #
         # gradients for self.params[k].                                            #
         ############################################################################
-        pass
+        cache = {}
+        h0 = features.dot(W_proj)+b_proj
+        vec_word_in,cache["embed_in"] = word_embedding_forward(captions_in,W_embed)
+        if (self.cell_type == "rnn"):
+            hidden_state,cache["rnn_forward"]= rnn_forward(vec_word_in,h0,Wx,Wh,b)
+        else:
+            hidden_state,cache["lstm_forward"] = lstm_forward(vec_word_in,h0,Wx,Wh,b)
+
+        scores,cache["temporal"] = temporal_affine_forward(hidden_state,W_vocab,b_vocab)
+        loss, dscores = temporal_softmax_loss(scores,captions_out,mask)
+
+
+        dhidden_state,dW_vocab,db_vocab = temporal_affine_backward(dscores,cache["temporal"])
+        
+        if (self.cell_type == "rnn"):
+            dvec_word_in,dh0,dWx,dWh,db = rnn_backward(dhidden_state,cache["rnn_forward"])
+        else:
+            dvec_word_in,dh0,dWx,dWh,db = lstm_backward(dhidden_state,cache["lstm_forward"])
+        dW_embed = word_embedding_backward(dvec_word_in,cache["embed_in"])
+        dW_proj = features.T.dot(dh0)
+        db_proj = np.sum(dh0,axis = 0)
+        grads={ 'W_vocab':dW_vocab,
+                'b_vocab':db_vocab,
+                'Wx':dWx,
+                'Wh':dWh,
+                'b':db,
+                'W_embed':dW_embed,
+                'W_proj':dW_proj,
+                'b_proj':db_proj} 
         ############################################################################
         #                             END OF YOUR CODE                             #
         ############################################################################
@@ -199,7 +227,24 @@ class CaptioningRNN(object):
         # functions; you'll need to call rnn_step_forward or lstm_step_forward in #
         # a loop.                                                                 #
         ###########################################################################
-        pass
+        cache = {}
+        h, cache["affine_test"] = affine_forward(features, W_proj, b_proj)
+        sample_caption = np.zeros((N,1), dtype=np.int32)
+        c = np.zeros(h.shape)
+        for i in range(max_length):
+            vec_word_in_sample,cache["embed_in_test"] = word_embedding_forward(sample_caption,W_embed)
+            vec_word_in_sample = vec_word_in_sample.reshape([vec_word_in_sample.shape[0],vec_word_in_sample.shape[2]])
+            if (self.cell_type=="rnn"):
+                h,cache["not_important"] = rnn_step_forward(vec_word_in_sample,h,Wx,Wh,b)
+            else:
+                h,c,cache["not_important"] = lstm_step_forward(vec_word_in_sample,h,c,Wx,Wh,b)
+            N,H = h.shape
+            h = h.reshape([N,1,H])
+            scores,cache["not_important"] = temporal_affine_forward(h,W_vocab,b_vocab)
+            sample_caption = np.argmax(scores,axis = 2).reshape([N,])
+            captions[:,i] = sample_caption
+            sample_caption = sample_caption.reshape([N,1])
+            h = h.reshape([N,H])
         ############################################################################
         #                             END OF YOUR CODE                             #
         ############################################################################
